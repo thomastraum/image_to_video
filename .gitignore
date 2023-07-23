@@ -1,0 +1,11 @@
+.venv/*
+.venv
+
+*.jpg
+*.png
+*.gif
+*.jpeg
+
+*.mp4
+*.avi
+*.mov
