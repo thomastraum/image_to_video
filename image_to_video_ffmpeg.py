@@ -11,6 +11,35 @@ import random
 import datetime
 import subprocess
 import shutil
+from concurrent.futures import ProcessPoolExecutor
+import concurrent.futures
+
+
+def preprocess_and_save(
+    img_path, target_size, temp_folder, display_duration, shuffle_duration, image_files
+):
+    filenames = []
+    main_image = preprocess_image(img_path, target_size)
+
+    # Save the main image for the display duration
+    for i in range(display_duration):
+        filename = os.path.join(
+            temp_folder, f"img_{len(os.listdir(temp_folder)):04d}.png"
+        )
+        main_image.save(filename)
+        filenames.append(filename)
+
+    # Save shuffle images
+    for i in range(shuffle_duration):
+        shuffle_img_path = random.choice(image_files)
+        shuffle_img = preprocess_image(shuffle_img_path, target_size)
+        filename = os.path.join(
+            temp_folder, f"img_{len(os.listdir(temp_folder)):04d}.png"
+        )
+        shuffle_img.save(filename)
+        filenames.append(filename)
+
+    return filenames
 
 
 def generate_output_filename(input_dir):
@@ -67,36 +96,56 @@ def generate_video_ffmpeg(
         os.makedirs(temp_folder)
 
     img_seq = []
-
-    print("Starting preprocessing of images...")
     total_images = len(image_files)
 
-    while image_files:
-        img_index = random.randint(0, len(image_files) - 1)
-        main_image_path = image_files[img_index]
-        main_image = preprocess_image(main_image_path, (video_width, video_height))
+    print("Starting preprocessing of images...")
 
-        # Save the main image for the display duration
-        for i in range(display_duration):
-            filename = os.path.join(temp_folder, f"img_{len(img_seq):04d}.png")
-            main_image.save(filename)
-            img_seq.append(filename)
+    # Use ProcessPoolExecutor for parallel processing
+    # Use ProcessPoolExecutor for parallel processing
+    with ProcessPoolExecutor() as executor:
+        for img_path in image_files:
+            # Save the main image for display_duration and shuffle images for shuffle_duration
+            futures = executor.submit(
+                preprocess_and_save,
+                img_path,
+                (video_width, video_height),
+                temp_folder,
+                display_duration,
+                shuffle_duration,
+                image_files,
+            )
+            filenames = futures.result()
+            img_seq.extend(filenames)
+            print(
+                f"Processed {len(img_seq)} out of {total_images * (display_duration + shuffle_duration)} frames."
+            )
 
-        processed_images = total_images - len(image_files) + 1
-        print(f"Processed {processed_images} out of {total_images} images.")
+    # while image_files:
+    #     img_index = random.randint(0, len(image_files) - 1)
+    #     main_image_path = image_files[img_index]
+    #     main_image = preprocess_image(main_image_path, (video_width, video_height))
 
-        del image_files[img_index]
+    #     # Save the main image for the display duration
+    #     for i in range(display_duration):
+    #         filename = os.path.join(temp_folder, f"img_{len(img_seq):04d}.png")
+    #         main_image.save(filename)
+    #         img_seq.append(filename)
 
-        # Save shuffle images
-        for i in range(shuffle_duration):
-            if image_files:
-                shuffle_img_path = random.choice(image_files)
-                shuffle_img = preprocess_image(
-                    shuffle_img_path, (video_width, video_height)
-                )
-                filename = os.path.join(temp_folder, f"img_{len(img_seq):04d}.png")
-                shuffle_img.save(filename)
-                img_seq.append(filename)
+    #     processed_images = total_images - len(image_files) + 1
+    #     print(f"Processed {processed_images} out of {total_images} images.")
+
+    #     del image_files[img_index]
+
+    #     # Save shuffle images
+    #     for i in range(shuffle_duration):
+    #         if image_files:
+    #             shuffle_img_path = random.choice(image_files)
+    #             shuffle_img = preprocess_image(
+    #                 shuffle_img_path, (video_width, video_height)
+    #             )
+    #             filename = os.path.join(temp_folder, f"img_{len(img_seq):04d}.png")
+    #             shuffle_img.save(filename)
+    #             img_seq.append(filename)
 
     print("Starting video generation with ffmpeg...")
     # Use ffmpeg to convert the image sequence to video
