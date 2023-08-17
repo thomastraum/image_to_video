@@ -1,2 +1,2 @@
-PILLOW
-OPEN-CV
+pillow
+opencv-python
