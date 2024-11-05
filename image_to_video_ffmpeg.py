@@ -3,7 +3,6 @@
 
 """
 
-
 import argparse
 import os
 from PIL import Image
@@ -13,30 +12,112 @@ import subprocess
 import shutil
 from concurrent.futures import ProcessPoolExecutor
 import concurrent.futures
+import pytesseract
+import cv2
+import numpy as np
+import easyocr
+
+reader = easyocr.Reader(["en"], gpu=True)  # Initialize once, use multiple times
+
+
+def create_collage(images, target_size, grid_size=(4, 4)):
+    """Create a collage from multiple images arranged in a grid."""
+    width, height = target_size
+    cell_width = width // grid_size[0]
+    cell_height = height // grid_size[1]
+
+    # Create blank canvas
+    collage = Image.new("RGB", target_size, (0, 0, 0))
+
+    # Place images in grid
+    for idx, img in enumerate(images):
+        if idx >= grid_size[0] * grid_size[1]:
+            break
+
+        row = idx // grid_size[0]
+        col = idx % grid_size[0]
+
+        # Resize image to fit cell
+        resized_img = preprocess_image(img, (cell_width, cell_height))
+
+        # Calculate position
+        x = col * cell_width
+        y = row * cell_height
+
+        # Paste image
+        collage.paste(resized_img, (x, y))
+
+    return collage
 
 
 def preprocess_and_save(
     img_path, target_size, temp_folder, display_duration, shuffle_duration, image_files
 ):
     filenames = []
-    main_image = preprocess_image(img_path, target_size)
 
-    # Save the main image for the display duration
+    # Create a pool of available images, excluding the current image
+    available_images = [img for img in image_files if img != img_path]
+    grid_size = (2, 2)
+    images_per_collage = grid_size[0] * grid_size[1]
+
+    # Create main collage
+    collage_images = [img_path]  # Start with the main image
+
+    # Fill remaining slots with random unused images
+    remaining_slots = images_per_collage - 1
+    if len(available_images) >= remaining_slots:
+        selected_images = random.sample(available_images, remaining_slots)
+        collage_images.extend(selected_images)
+        # Remove used images from available pool
+        for img in selected_images:
+            available_images.remove(img)
+    else:
+        # If we don't have enough images, use what we have
+        collage_images.extend(available_images)
+        available_images = []
+
+    main_collage = create_collage(collage_images, target_size, grid_size)
+
+    # Save the main collage for the display duration
     for i in range(display_duration):
         filename = os.path.join(
             temp_folder, f"img_{len(os.listdir(temp_folder)):04d}.png"
         )
-        main_image.save(filename)
+        main_collage.save(filename)
         filenames.append(filename)
 
-    # Save shuffle images
+    # Create and save shuffle collages
     for i in range(shuffle_duration):
-        shuffle_img_path = random.choice(image_files)
-        shuffle_img = preprocess_image(shuffle_img_path, target_size)
+        shuffle_images = []
+        if len(available_images) >= images_per_collage:
+            # If we have enough images, take a random sample
+            selected_images = random.sample(available_images, images_per_collage)
+            shuffle_images.extend(selected_images)
+            # Remove used images from available pool
+            for img in selected_images:
+                available_images.remove(img)
+        else:
+            # If we don't have enough images, use remaining ones and reset pool
+            shuffle_images.extend(available_images)
+            available_images = [
+                img for img in image_files if img != img_path
+            ]  # Reset pool
+
+            # If we still need more images, take from reset pool
+            remaining_needed = images_per_collage - len(shuffle_images)
+            if remaining_needed > 0 and available_images:
+                additional_images = random.sample(
+                    available_images, min(remaining_needed, len(available_images))
+                )
+                shuffle_images.extend(additional_images)
+                for img in additional_images:
+                    available_images.remove(img)
+
+        shuffle_collage = create_collage(shuffle_images, target_size, grid_size)
         filename = os.path.join(
             temp_folder, f"img_{len(os.listdir(temp_folder)):04d}.png"
         )
-        shuffle_img.save(filename)
+        shuffle_collage.save(filename)
         filenames.append(filename)
 
     return filenames
@@ -69,6 +150,66 @@ def preprocess_image(img_path, target_size):
         return img
 
 
+def has_too_much_text(image_path, threshold=20):
+    """
+    Check if an image has too much text using EasyOCR with GPU support.
+    threshold: approximate number of characters above which we consider it too texty
+    """
+    try:
+        # Read image and detect text
+        result = reader.readtext(image_path)
+
+        # Count total characters in detected text
+        char_count = sum(len(text) for _, text, _ in result)
+
+        return char_count > threshold
+    except Exception as e:
+        print(f"Warning: Could not process {image_path} for text detection: {e}")
+        return False
+
+
+def has_too_much_text_simple(image_path, threshold=0.1):
+    """
+    Simpler method to detect potential text using edge detection.
+    threshold: proportion of edges above which we consider it too texty (0-1)
+    """
+    try:
+        # Read image in grayscale
+        img = cv2.imread(image_path, 0)
+        if img is None:
+            return False
+
+        # Detect edges
+        edges = cv2.Canny(img, 100, 200)
+
+        # Calculate proportion of edges
+        edge_ratio = np.count_nonzero(edges) / edges.size
+
+        return edge_ratio > threshold
+    except Exception as e:
+        print(f"Warning: Could not process {image_path} for text detection: {e}")
+        return False
+
+
+def filter_image_files(image_folder):
+    """Filter out images with too much text"""
+    image_files = [
+        os.path.join(image_folder, f)
+        for f in os.listdir(image_folder)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    ]
+
+    # Filter out images with too much text
+    filtered_files = []
+    for img_path in image_files:
+        if not has_too_much_text(img_path):
+            filtered_files.append(img_path)
+        else:
+            print(f"Excluding {os.path.basename(img_path)} due to text content")
+
+    return filtered_files
+
+
 def generate_video_ffmpeg(
     image_folder,
     output_file,
@@ -84,11 +225,13 @@ def generate_video_ffmpeg(
     if video_width % 2 != 0:
         video_width += 1
 
-    image_files = [
-        os.path.join(image_folder, f)
-        for f in os.listdir(image_folder)
-        if f.lower().endswith((".png", ".jpg", ".jpeg"))
-    ]
+    # Use the new filter function instead of direct file listing
+    image_files = filter_image_files(image_folder)
+
+    if not image_files:
+        raise ValueError(
+            "No suitable images found after filtering out text-heavy images"
+        )
 
     # Create a temporary directory to store processed images
     temp_folder = "temp_imgs"
