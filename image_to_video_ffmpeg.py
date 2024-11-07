@@ -20,7 +20,7 @@ import easyocr
 reader = easyocr.Reader(["en"], gpu=True)  # Initialize once, use multiple times
 
 
-def create_collage(images, target_size, grid_size=(4, 4)):
+def create_collage(images, target_size, grid_size=(2, 2)):
     """Create a collage from multiple images arranged in a grid."""
     width, height = target_size
     cell_width = width // grid_size[0]
